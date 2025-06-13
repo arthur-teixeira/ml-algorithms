@@ -1,8 +1,10 @@
 #include <assert.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 int reverse_int(int i) {
   int c1 = i & 255;
@@ -21,6 +23,19 @@ typedef struct {
   size_t image_size;
   size_t image_count;
 } Dataset;
+
+#define MAT_AT(m, i, j) (m).values[(i) * (m).cols + (j)]
+
+typedef struct {
+  float *values;
+  size_t rows;
+  size_t cols;
+} Mat;
+
+typedef struct {
+  float *values;
+  size_t size;
+} Vec;
 
 uint8_t **load_mnist_images(const char *filename, int *image_count,
                             int *image_size, int *rows, int *cols) {
@@ -96,7 +111,68 @@ Dataset load_mnist_dataset(const char *images_filename,
   };
 }
 
-#define IMAGE 10
+inline float sig(float i) { return 1 / (1 + exp(-i)); }
+
+float rand_float() { return (float)rand() / (float)RAND_MAX; }
+
+#define IMAGE 1000
+
+typedef struct {
+  size_t num_layers;
+  size_t *layer_sizes;
+  Vec *biases;
+  Mat *weights;
+} Network;
+
+Vec rand_vec(size_t size) {
+  Vec v = (Vec){
+      .size = size,
+      .values = calloc(sizeof(float), size),
+  };
+  assert(v.values != NULL);
+
+  for (size_t i = 0; i < size; i++) {
+    v.values[i] = rand_float();
+  }
+
+  return v;
+}
+
+Mat rand_matrix(size_t m, size_t n) {
+  Mat mat = (Mat){
+      .rows = m,
+      .cols = n,
+      .values = calloc(sizeof(float), m * n),
+  };
+  assert(mat.values != NULL);
+
+  for (size_t i = 0; i < m * n; i++) {
+    mat.values[i] = rand_float();
+  }
+
+  return mat;
+}
+
+Network new_network(size_t num_layers, size_t *layer_sizes) {
+  Network net = (Network){
+      .num_layers = num_layers,
+      .layer_sizes = layer_sizes,
+      .biases = calloc(sizeof(Vec), num_layers),
+      .weights = calloc(sizeof(Mat), num_layers),
+  };
+  assert(net.biases != NULL);
+  assert(net.weights != NULL);
+
+  for (size_t i = 0; i < num_layers; i++) {
+    net.biases[i] = rand_vec(layer_sizes[i]);
+  }
+
+  for (size_t i = 0; i < num_layers - 1; i++) {
+    net.weights[i] = rand_matrix(layer_sizes[i+1], layer_sizes[i]);
+  }
+
+  return net;
+}
 
 int main() {
   Dataset data = load_mnist_dataset("./data/lg/train-images.idx3-ubyte",
