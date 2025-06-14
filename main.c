@@ -25,6 +25,9 @@ typedef struct {
 } Dataset;
 
 #define MAT_AT(m, i, j) (m).values[(i) * (m).cols + (j)]
+#define VEC_AT(v, i) (v).values[(i)]
+#define MAT_SIZE(m) (m).cols *(m).rows
+#define FOREACH_VEC(v) for (size_t i = 0; i < (v).size; i++)
 
 typedef struct {
   float *values;
@@ -36,6 +39,11 @@ typedef struct {
   float *values;
   size_t size;
 } Vec;
+
+typedef struct {
+  Vec data;
+  Vec expected;
+} Sample;
 
 uint8_t **load_mnist_images(const char *filename, int *image_count,
                             int *image_size, int *rows, int *cols) {
@@ -112,10 +120,7 @@ Dataset load_mnist_dataset(const char *images_filename,
 }
 
 inline float sig(float i) { return 1 / (1 + exp(-i)); }
-
-float rand_float() { return (float)rand() / (float)RAND_MAX; }
-
-#define IMAGE 1000
+inline float d_sig(float i) { return sig(i) * (1 - sig(i)); }
 
 typedef struct {
   size_t num_layers;
@@ -124,33 +129,125 @@ typedef struct {
   Mat *weights;
 } Network;
 
-Vec rand_vec(size_t size) {
+typedef struct {
+  Vec *dnb;
+  Mat *dnw;
+} Backprop;
+
+Backprop backprop(Network *net, Vec x, Vec y);
+void free_backprop(Backprop b);
+void apply_gradient_mat(Mat *gradients, Mat *deltas, size_t num_mats);
+void apply_gradient_vec(Vec *gradients, Vec *deltas, size_t num_vecs);
+void free_mat_array(Network *net, Mat *v);
+Mat *mat_array(Network *net);
+void free_vec_array(Network *net, Vec *v);
+Vec *vec_array(Network *net);
+void gradient_descent(Network *net, Sample *training_data,
+                      size_t training_samples, size_t epochs,
+                      size_t mini_batch_size, float eta);
+Sample **split_mini_batches(Sample *training_data, size_t n, size_t batch_size,
+                            size_t *num_batches);
+void shuffle(Sample *training_data, size_t n);
+Vec feed_forward(Network *net, Vec a);
+Vec matrix_vec_multiply(Mat w, Vec a);
+Network new_network(size_t num_layers, size_t *layer_sizes);
+Vec vec_sub(Vec a, Vec b);
+Vec vec_add(Vec a, Vec b);
+Vec d_sig_vec(Vec a);
+Vec sig_vec(Vec a);
+float dot(Vec a, Vec b);
+Mat rand_matrix(size_t m, size_t n);
+void free_mat(Mat m);
+Mat new_mat(size_t rows, size_t cols);
+Vec rand_vec(size_t size);
+void free_vec(Vec v);
+Vec new_vec(size_t size);
+void update_batch(Network *net, Sample *batch, size_t batch_size, float eta);
+Mat outer_product(Vec a, Vec b);
+
+float rand_float() { return (float)rand() / (float)RAND_MAX; }
+
+#define IMAGE 1000
+
+Vec new_vec(size_t size) {
   Vec v = (Vec){
       .size = size,
       .values = calloc(sizeof(float), size),
   };
   assert(v.values != NULL);
-
-  for (size_t i = 0; i < size; i++) {
-    v.values[i] = rand_float();
-  }
-
   return v;
 }
 
-Mat rand_matrix(size_t m, size_t n) {
+void free_vec(Vec v) { free(v.values); }
+
+Vec rand_vec(size_t size) {
+  Vec v = new_vec(size);
+  FOREACH_VEC(v) { v.values[i] = rand_float(); }
+  return v;
+}
+
+Mat new_mat(size_t rows, size_t cols) {
   Mat mat = (Mat){
-      .rows = m,
-      .cols = n,
-      .values = calloc(sizeof(float), m * n),
+      .rows = rows,
+      .cols = cols,
+      .values = calloc(sizeof(float), rows * cols),
   };
   assert(mat.values != NULL);
+  return mat;
+}
 
+void free_mat(Mat m) { free(m.values); }
+
+Mat rand_matrix(size_t m, size_t n) {
+  Mat mat = new_mat(m, n);
   for (size_t i = 0; i < m * n; i++) {
     mat.values[i] = rand_float();
   }
-
   return mat;
+}
+
+float dot(Vec a, Vec b) {
+  assert(a.size == b.size);
+  float acc = 0.0f;
+  FOREACH_VEC(a) { acc += a.values[i] * b.values[i]; }
+  return acc;
+}
+
+Vec sig_vec(Vec a) {
+  Vec s = new_vec(a.size);
+  FOREACH_VEC(a) { VEC_AT(s, i) = sig(VEC_AT(a, i)); }
+  return s;
+}
+
+Vec d_sig_vec(Vec a) {
+  Vec d = new_vec(a.size);
+  FOREACH_VEC(a) { VEC_AT(d, i) = sig(VEC_AT(a, i)); }
+  return d;
+}
+
+Vec vec_add(Vec a, Vec b) {
+  Vec c = new_vec(a.size);
+  FOREACH_VEC(a) { VEC_AT(c, i) = VEC_AT(a, i) + VEC_AT(b, i); }
+  return c;
+}
+
+Vec vec_sub(Vec a, Vec b) {
+  Vec c = new_vec(a.size);
+  FOREACH_VEC(a) { VEC_AT(c, i) = VEC_AT(a, i) - VEC_AT(b, i); }
+  return c;
+}
+
+Mat outer_product(Vec a, Vec b) {
+  size_t rows = a.size;
+  size_t cols = b.size;
+  Mat result = new_mat(rows, cols);
+  for (size_t i = 0; i < rows; i++) {
+    for (size_t j = 0; j < cols; j++) {
+      MAT_AT(result, i, j) = VEC_AT(a, i) * VEC_AT(b, j);
+    }
+  }
+
+  return result;
 }
 
 Network new_network(size_t num_layers, size_t *layer_sizes) {
@@ -168,10 +265,238 @@ Network new_network(size_t num_layers, size_t *layer_sizes) {
   }
 
   for (size_t i = 0; i < num_layers - 1; i++) {
-    net.weights[i] = rand_matrix(layer_sizes[i+1], layer_sizes[i]);
+    net.weights[i] = rand_matrix(layer_sizes[i + 1], layer_sizes[i]);
   }
 
   return net;
+}
+
+Vec matrix_vec_multiply(Mat w, Vec a) {
+  assert(w.cols == a.size);
+  Vec result = new_vec(w.rows);
+  for (size_t i = 0; i < w.rows; i++) {
+    for (size_t j = 0; j < w.cols; j++) {
+      VEC_AT(result, i) += MAT_AT(w, i, j) * VEC_AT(a, j);
+    }
+  }
+
+  return result;
+}
+
+Vec transposed_matrix_vec_multiply(Mat w, Vec a) {
+  assert(w.rows == a.size);
+  Vec result = new_vec(w.cols);
+  for (size_t i = 0; i < w.cols; i++) {
+    for (size_t j = 0; j < w.rows; j++) {
+      VEC_AT(result, i) += MAT_AT(w, j, i) * VEC_AT(a, j);
+    }
+  }
+
+  return result;
+}
+
+Vec feed_forward(Network *net, Vec a) {
+  for (size_t i = 0; i < net->num_layers - 1; i++) {
+    Mat w = net->weights[i];
+    Vec b = net->biases[i];
+    Vec z = vec_add(matrix_vec_multiply(w, a), b);
+    if (i > 0) {
+      free_vec(a);
+    }
+    a = sig_vec(z);
+  }
+  return a;
+}
+
+void shuffle(Sample *training_data, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    size_t j = rand() % n;
+    size_t k = rand() % n;
+
+    Sample t = training_data[j];
+    training_data[j] = training_data[k];
+    training_data[k] = t;
+  }
+}
+
+Sample **split_mini_batches(Sample *training_data, size_t n, size_t batch_size,
+                            size_t *num_batches) {
+  *num_batches = n / batch_size;
+  Sample **bs = calloc(sizeof(Sample *), *num_batches);
+  for (size_t i = 0, j = 0; i < n; i += batch_size, j++) {
+    bs[j] = &training_data[i];
+  }
+
+  return bs;
+}
+
+void gradient_descent(Network *net, Sample *training_data,
+                      size_t training_samples, size_t epochs,
+                      size_t mini_batch_size, float eta) {
+  for (size_t i = 0; i < epochs; i++) {
+    shuffle(training_data, training_samples);
+    size_t num_batches = 0;
+    Sample **mini_batches = split_mini_batches(training_data, training_samples,
+                                               mini_batch_size, &num_batches);
+    for (size_t j = 0; j < num_batches; j++) {
+      update_batch(net, mini_batches[j], mini_batch_size, eta);
+    }
+    free(mini_batches);
+  }
+}
+
+Vec *vec_array(Network *net) {
+  size_t num_vecs = net->num_layers - 1;
+  Vec *a = calloc(sizeof(Vec), num_vecs);
+  for (size_t i = 0; i < num_vecs; i++) {
+    size_t vec_size = net->layer_sizes[i + 1];
+    a[i] = new_vec(vec_size);
+  }
+  return a;
+}
+
+void free_vec_array(Network *net, Vec *v) {
+  for (size_t i = 0; i < net->num_layers - 1; i++) {
+    free_vec(v[i]);
+  }
+  free(v);
+}
+
+Mat *mat_array(Network *net) {
+  size_t num_matrices = net->num_layers - 1;
+  Mat *a = calloc(sizeof(Mat), num_matrices);
+  for (size_t i = 0; i < num_matrices; i++) {
+    size_t mat_rows = net->layer_sizes[i + 1];
+    size_t mat_cols = net->layer_sizes[i];
+    a[i] = new_mat(mat_rows, mat_cols);
+  }
+
+  return a;
+}
+
+void free_mat_array(Network *net, Mat *v) {
+  for (size_t i = 0; i < net->num_layers - 1; i++) {
+    free_mat(v[i]);
+  }
+  free(v);
+}
+
+void update_batch(Network *net, Sample *batch, size_t batch_size, float eta) {
+  Vec *gradient_b = vec_array(net);
+  Mat *gradient_w = mat_array(net);
+
+  for (size_t i = 0; i < batch_size; i++) {
+    Vec x = batch[i].data;
+    Vec y = batch[i].expected;
+    Backprop b = backprop(net, x, y);
+    apply_gradient_mat(gradient_w, b.dnw, net->num_layers - 1);
+    apply_gradient_vec(gradient_b, b.dnb, net->num_layers - 1);
+    free_backprop(b);
+  }
+
+  for (size_t i = 0; i < net->num_layers - 1; i++) {
+    for (size_t j = 0; j < gradient_b[i].size; j++) {
+      VEC_AT(net->biases[i], j) -=
+          (eta / batch_size) * VEC_AT(gradient_b[i], j);
+    }
+  }
+
+  for (size_t i = 0; i < net->num_layers - 1; i++) {
+    for (size_t j = 0; j < MAT_SIZE(gradient_w[i]); j++) {
+      VEC_AT(net->weights[i], j) -=
+          (eta / batch_size) * VEC_AT(gradient_w[i], j);
+    }
+  }
+
+  free_vec_array(net, gradient_b);
+  free_mat_array(net, gradient_w);
+}
+
+void apply_gradient_vec(Vec *gradients, Vec *deltas, size_t num_vecs) {
+  for (size_t i = 0; i < num_vecs; i++) {
+    assert(gradients[i].size == deltas[i].size);
+    for (size_t j = 0; j < gradients[i].size; j++) {
+      VEC_AT(gradients[i], j) += VEC_AT(deltas[i], j);
+    }
+  }
+}
+
+void apply_gradient_mat(Mat *gradients, Mat *deltas, size_t num_mats) {
+  for (size_t i = 0; i < num_mats; i++) {
+    assert(gradients[i].cols == deltas[i].cols);
+    assert(gradients[i].rows == deltas[i].rows);
+    for (size_t j = 0; j < MAT_SIZE(gradients[i]); j++) {
+      VEC_AT(gradients[i], j) += VEC_AT(deltas[i], j);
+    }
+  }
+}
+
+Vec cost_derivative(Vec activation, Vec expected) {
+  return vec_sub(activation, expected);
+}
+
+Vec hadamard(Vec a, Vec b) {
+  assert(a.size == b.size);
+  Vec c = new_vec(a.size);
+  FOREACH_VEC(a) { VEC_AT(c, i) = VEC_AT(a, i) * VEC_AT(b, i); }
+  return c;
+}
+
+Backprop backprop(Network *net, Vec x, Vec y) {
+  Vec *gradient_b = vec_array(net);
+  Mat *gradient_w = mat_array(net);
+
+  size_t n = net->num_layers - 1;
+
+  Vec activation = x;
+  Vec activations[n + 1];
+  activations[0] = x;
+  Vec zs[n];
+
+  // Forward pass, storing activations and z vectors layer by layer
+  for (size_t i = 0; i < n; i++) {
+    Mat w = net->weights[i];
+    Vec b = net->biases[i];
+    Vec product = matrix_vec_multiply(w, activation);
+    Vec z = vec_add(product, b);
+    zs[i] = z;
+    free_vec(product);
+    activation = sig_vec(z);
+    activations[1 + i] = activation;
+  }
+
+  // Backward pass, calculate cost derivatives
+  Vec dcost = cost_derivative(activations[n - 1], y);
+  Vec dact = d_sig_vec(zs[n - 1]);
+  Vec delta = hadamard(dcost, dact);
+  free_vec(dcost);
+  free_vec(dact);
+
+  gradient_b[n - 1] = delta;
+  gradient_w[n - 1] = outer_product(delta, activation);
+
+  for (ssize_t i = n - 2; i >= 0; i--) {
+    Vec z = zs[i];
+    Vec dact = d_sig_vec(z);
+    Vec dcost = transposed_matrix_vec_multiply(net->weights[i], delta);
+    delta = hadamard(dcost, dact);
+    free_vec(dcost);
+    free_vec(dact);
+
+    gradient_b[i] = delta;
+    gradient_w[i] = outer_product(delta, activations[i]);
+  }
+
+  for (size_t i = 0; i < n; i++) {
+    if (i > 0) {
+      free_vec(activations[i]);
+    }
+    free_vec(zs[i]);
+  }
+  return (Backprop){
+      .dnb = gradient_b,
+      .dnw = gradient_w,
+  };
 }
 
 int main() {
