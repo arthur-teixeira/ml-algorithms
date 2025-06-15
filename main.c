@@ -97,8 +97,49 @@ uint8_t *load_mnist_labels(const char *filename, int *label_count) {
   return labels;
 }
 
-const char *brightness =
-    "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`'.";
+typedef Vec (*act)(Vec);
+
+typedef struct {
+  size_t neurons;
+  act act;
+  act dact;
+} Layer;
+
+typedef struct {
+  size_t num_layers;
+  Layer *layers;
+  Vec *biases;
+  Mat *weights;
+} Network;
+
+typedef struct {
+  Vec *dnb;
+  Mat *dnw;
+} Backprop;
+
+Backprop backprop(Network *net, Vec x, Vec y);
+void free_backprop(Network *net, Backprop b);
+void apply_gradient_mat(Mat *gradients, Mat *deltas, size_t num_mats);
+void apply_gradient_vec(Vec *gradients, Vec *deltas, size_t num_vecs);
+void free_mat_array(Network *net, Mat *v);
+Mat *mat_array(Network *net, bool);
+void free_vec_array(Network *net, Vec *v);
+Vec *vec_array(Network *net, bool);
+Sample **split_mini_batches(Sample *training_data, size_t n, size_t batch_size,
+                            size_t *num_batches);
+void shuffle(Sample *training_data, size_t n);
+Vec feed_forward(Network *net, Vec a);
+Vec matrix_vec_multiply(Mat w, Vec a);
+Network new_network(size_t num_layers, Layer *layers);
+Vec vec_sub(Vec a, Vec b);
+Vec vec_add(Vec a, Vec b);
+float dot(Vec a, Vec b);
+void free_mat(Mat m);
+Mat new_mat(size_t rows, size_t cols);
+void free_vec(Vec v);
+Vec new_vec(size_t size);
+void update_batch(Network *net, Sample *batch, size_t batch_size, float eta);
+Mat outer_product(Vec a, Vec b);
 
 Dataset load_mnist_dataset(const char *images_filename,
                            const char *labels_filename) {
@@ -122,52 +163,25 @@ Dataset load_mnist_dataset(const char *images_filename,
 
 float sig(float i) { return 1 / (1 + exp(-i)); }
 float d_sig(float i) { return sig(i) * (1 - sig(i)); }
+Vec sig_vec(Vec a) {
+  Vec s = new_vec(a.size);
+  FOREACH_VEC(a) { VEC_AT(s, i) = sig(VEC_AT(a, i)); }
+  return s;
+}
+Vec d_sig_vec(Vec a) {
+  Vec d = new_vec(a.size);
+  FOREACH_VEC(a) { VEC_AT(d, i) = sig(VEC_AT(a, i)); }
+  return d;
+}
 
-typedef struct {
-  size_t num_layers;
-  size_t *layer_sizes;
-  Vec *biases;
-  Mat *weights;
-} Network;
-
-typedef struct {
-  Vec *dnb;
-  Mat *dnw;
-} Backprop;
-
-Backprop backprop(Network *net, Vec x, Vec y);
-void free_backprop(Network *net, Backprop b);
-void apply_gradient_mat(Mat *gradients, Mat *deltas, size_t num_mats);
-void apply_gradient_vec(Vec *gradients, Vec *deltas, size_t num_vecs);
-void free_mat_array(Network *net, Mat *v);
-Mat *mat_array(Network *net, bool);
-void free_vec_array(Network *net, Vec *v);
-Vec *vec_array(Network *net, bool);
-Sample **split_mini_batches(Sample *training_data, size_t n, size_t batch_size,
-                            size_t *num_batches);
-void shuffle(Sample *training_data, size_t n);
-Vec feed_forward(Network *net, Vec a);
-Vec matrix_vec_multiply(Mat w, Vec a);
-Network new_network(size_t num_layers, size_t *layer_sizes);
-Vec vec_sub(Vec a, Vec b);
-Vec vec_add(Vec a, Vec b);
-Vec d_sig_vec(Vec a);
-Vec sig_vec(Vec a);
-float dot(Vec a, Vec b);
-void free_mat(Mat m);
-Mat new_mat(size_t rows, size_t cols);
-void free_vec(Vec v);
-Vec new_vec(size_t size);
-void update_batch(Network *net, Sample *batch, size_t batch_size, float eta);
-Mat outer_product(Vec a, Vec b);
-
-float rand_float() { return ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f; }
+float rand_normal() { return ((float)rand() / (float)RAND_MAX); }
 float rand_float_scaled(size_t fan_in, size_t fan_out) {
   // Xavier/Glorot Uniform
   float limit = sqrtf(6.0f / (fan_in + fan_out));
   float scale = 2.0f * limit;
-  return ((float)rand() / RAND_MAX) * scale - limit;
+  return (rand_normal())*scale - limit;
 }
+
 Vec expected(size_t label) {
   Vec v = new_vec(10);
   VEC_AT(v, label) = 1.0f;
@@ -257,18 +271,6 @@ float dot(Vec a, Vec b) {
   return acc;
 }
 
-Vec sig_vec(Vec a) {
-  Vec s = new_vec(a.size);
-  FOREACH_VEC(a) { VEC_AT(s, i) = sig(VEC_AT(a, i)); }
-  return s;
-}
-
-Vec d_sig_vec(Vec a) {
-  Vec d = new_vec(a.size);
-  FOREACH_VEC(a) { VEC_AT(d, i) = sig(VEC_AT(a, i)); }
-  return d;
-}
-
 Vec vec_add(Vec a, Vec b) {
   Vec c = new_vec(a.size);
   FOREACH_VEC(a) { VEC_AT(c, i) = VEC_AT(a, i) + VEC_AT(b, i); }
@@ -294,10 +296,10 @@ Mat outer_product(Vec a, Vec b) {
   return result;
 }
 
-Network new_network(size_t num_layers, size_t *layer_sizes) {
+Network new_network(size_t num_layers, Layer *layers) {
   Network net = (Network){
       .num_layers = num_layers,
-      .layer_sizes = layer_sizes,
+      .layers = layers,
       .biases = calloc(sizeof(Vec), num_layers),
       .weights = calloc(sizeof(Mat), num_layers),
   };
@@ -305,14 +307,14 @@ Network new_network(size_t num_layers, size_t *layer_sizes) {
   assert(net.weights != NULL);
 
   for (size_t i = 0; i < num_layers; i++) {
-    size_t fan_in = i > 0 ? layer_sizes[i - 1] : 0;
-    size_t fan_out = layer_sizes[i];
+    size_t fan_in = i > 0 ? layers[i - 1].neurons : 0;
+    size_t fan_out = layers[i].neurons;
     net.biases[i] = rand_vec(fan_out, fan_in, fan_out);
   }
 
   for (size_t i = 0; i < num_layers - 1; i++) {
-    net.weights[i] = rand_matrix(layer_sizes[i + 1], layer_sizes[i],
-                                 layer_sizes[i + 1], layer_sizes[i]);
+    net.weights[i] = rand_matrix(layers[i + 1].neurons, layers[i].neurons,
+                                 layers[i + 1].neurons, layers[i].neurons);
   }
   return net;
 }
@@ -430,7 +432,7 @@ Vec *vec_array(Network *net, bool fill) {
   Vec *a = calloc(sizeof(Vec), num_vecs);
   if (fill) {
     for (size_t i = 0; i < num_vecs; i++) {
-      size_t vec_size = net->layer_sizes[i + 1];
+      size_t vec_size = net->layers[i + 1].neurons;
       a[i] = new_vec(vec_size);
     }
   }
@@ -449,8 +451,8 @@ Mat *mat_array(Network *net, bool fill) {
   Mat *a = calloc(sizeof(Mat), num_matrices);
   if (fill) {
     for (size_t i = 0; i < num_matrices; i++) {
-      size_t mat_rows = net->layer_sizes[i + 1];
-      size_t mat_cols = net->layer_sizes[i];
+      size_t mat_rows = net->layers[i + 1].neurons;
+      size_t mat_cols = net->layers[i].neurons;
       a[i] = new_mat(mat_rows, mat_cols);
     }
   }
@@ -545,13 +547,15 @@ Backprop backprop(Network *net, Vec x, Vec y) {
     Vec z = vec_add(product, b);
     zs[i] = z;
     free_vec(product);
-    activation = sig_vec(z);
+    Layer l = net->layers[i];
+    activation = l.act(z);
     activations[1 + i] = activation;
   }
 
   // Backward pass, calculate cost derivatives
   Vec dcost = cost_derivative(activations[n], y);
-  Vec dact = d_sig_vec(zs[n - 1]);
+  Layer out = net->layers[n];
+  Vec dact = out.dact(zs[n - 1]);
   Vec delta = hadamard(dcost, dact);
   free_vec(dcost);
   free_vec(dact);
@@ -594,7 +598,11 @@ void free_backprop(Network *net, Backprop b) {
 int main() {
   Dataset data = load_mnist_dataset("./data/lg/train-images.idx3-ubyte",
                                     "./data/lg/train-labels.idx1-ubyte");
-  size_t layers[] = {784, 100, 10};
+  Layer layers[] = {
+      {.neurons = 784, .act = sig_vec, .dact = d_sig_vec},
+      {.neurons = 100, .act = sig_vec, .dact = d_sig_vec},
+      {.neurons = 10, .act = sig_vec, .dact = d_sig_vec},
+  };
   Network net = new_network(ARRAY_LEN(layers), layers);
   Sample *test_samples = samples(data);
   Dataset validate = load_mnist_dataset("./data/lg/t10k-images.idx3-ubyte",
@@ -602,7 +610,7 @@ int main() {
   printf("Loaded validation set\n");
 
   Sample *validate_samples = samples(validate);
-  gradient_descent(&net, test_samples, data.image_count, 50, 10, 2.0,
+  gradient_descent(&net, test_samples, data.image_count, 50, 10, 3.0,
                    validate_samples, validate.image_count);
   printf("Network trained\n");
 
