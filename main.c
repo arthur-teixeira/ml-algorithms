@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <raylib.h>
+#include <raymath.h>
+
 int reverse_int(int i) {
   int c1 = i & 255;
   int c2 = (i >> 8) & 255;
@@ -344,6 +347,7 @@ Vec transposed_matrix_vec_multiply(Mat w, Vec a) {
 }
 
 Vec feed_forward(Network *net, Vec a) {
+  assert(a.size == net->layers[0].neurons);
   for (size_t i = 0; i < net->num_layers - 1; i++) {
     Mat w = net->weights[i];
     Vec b = net->biases[i];
@@ -405,7 +409,7 @@ void evaluate(Network *net, size_t num_samples, Sample *validate_data) {
       wrong += 1;
     }
   }
-  printf("Test data results: %ld/%ld right, %ld/%ld wrong\n", right,
+  printf("Resultados: %ld/%ld corretos, %ld/%ld errados\n", right,
          num_samples, wrong, num_samples);
 }
 
@@ -421,7 +425,7 @@ void gradient_descent(Network *net, Sample *training_data,
     for (size_t j = 0; j < num_batches; j++) {
       update_batch(net, mini_batches[j], mini_batch_size, eta);
     }
-    printf("Finished epoch %ld - ", i);
+    printf("Epoca %ld - ", i);
     free(mini_batches);
     evaluate(net, validation_samples, validation_data);
   }
@@ -528,6 +532,23 @@ Vec hadamard(Vec a, Vec b) {
   return c;
 }
 
+Vec softmax(Vec z) {
+  float max = eval_result(z);
+  float sum = 0.0;
+
+  Vec result = new_vec(z.size);
+  for (size_t i = 0; i < z.size; i++) {
+    result.values[i] = expf(z.values[i] - max);
+    sum += result.values[i];
+  }
+
+  for (size_t i = 0; i < z.size; i++) {
+    result.values[i] /= sum;
+  }
+
+  return result;
+}
+
 Backprop backprop(Network *net, Vec x, Vec y) {
   Vec *gradient_b = vec_array(net, false);
   Mat *gradient_w = mat_array(net, false);
@@ -539,7 +560,6 @@ Backprop backprop(Network *net, Vec x, Vec y) {
   activations[0] = x;
   Vec zs[n];
 
-  // Forward pass, storing activations and z vectors layer by layer
   for (size_t i = 0; i < n; i++) {
     Mat w = net->weights[i];
     Vec b = net->biases[i];
@@ -552,7 +572,6 @@ Backprop backprop(Network *net, Vec x, Vec y) {
     activations[1 + i] = activation;
   }
 
-  // Backward pass, calculate cost derivatives
   Vec dcost = cost_derivative(activations[n], y);
   Layer out = net->layers[n];
   Vec dact = out.dact(zs[n - 1]);
@@ -563,8 +582,6 @@ Backprop backprop(Network *net, Vec x, Vec y) {
   gradient_b[n - 1] = delta;
   gradient_w[n - 1] = outer_product(delta, activations[n - 1]);
 
-  // last z is z[1]
-  // last weights is weights[2]
   for (ssize_t i = n - 2; i >= 0; i--) {
     Vec z = zs[i];
     Vec dact = d_sig_vec(z);
@@ -595,38 +612,127 @@ void free_backprop(Network *net, Backprop b) {
 }
 
 #define ARRAY_LEN(xs) sizeof(xs) / sizeof(xs[0])
+
+#define SCREEN_WIDTH 800
+#define SCREEN_HEIGHT 600
+
+#define IMAGE_SIZE 28
+#define CANVAS_SIZE (420)
+#define CELL_SIZE (CANVAS_SIZE / IMAGE_SIZE)
+
+float canvas[IMAGE_SIZE * IMAGE_SIZE];
+#define CANVAS_AT(i, j) (canvas)[(i) * IMAGE_SIZE + (j)]
+#define CANVAS_X 20
+#define CANVAS_Y 20
+Vector2 canvas_pos = (Vector2){CANVAS_X, CANVAS_Y};
+
+float blur_kernel[3][3] = {{1 / 16.0f, 2 / 16.0f, 1 / 16.0f},
+                           {2 / 16.0f, 1, 2 / 16.0f},
+                           {1 / 16.0f, 2 / 16.0f, 1 / 16.0f}};
+
+void init_canvas() {
+  for (int i = 0; i < IMAGE_SIZE; i++) {
+    for (int j = 0; j < IMAGE_SIZE; j++) {
+      int dx = j * CELL_SIZE;
+      int dy = i * CELL_SIZE;
+      Color c = {255, 255, 255, 0};
+      c.a = CANVAS_AT(i, j);
+      DrawRectangle(CANVAS_X + dx, CANVAS_Y + dy, CELL_SIZE, CELL_SIZE, c);
+    }
+  }
+
+  for (int i = 0; i <= IMAGE_SIZE; i++) {
+    int dx = i * CELL_SIZE;
+    DrawLine(CANVAS_X + dx, CANVAS_Y, CANVAS_X + dx, CANVAS_Y + CANVAS_SIZE,
+             GRAY);
+    DrawLine(CANVAS_X, CANVAS_Y + dx, CANVAS_X + CANVAS_SIZE, CANVAS_Y + dx,
+             GRAY);
+  }
+}
+
+void paint_cell_with_blur(int x, int y) {
+  for (int dy = -1; dy <= 1; dy++) {
+    for (int dx = -1; dx <= 1; dx++) {
+      int nx = x + dx;
+      int ny = y + dy;
+      if (nx >= 0 && nx < IMAGE_SIZE && ny >= 0 && ny < IMAGE_SIZE) {
+        float weight = blur_kernel[dy + 1][dx + 1];
+        float intensity = 3 * weight;
+        float *pixel = &CANVAS_AT(ny, nx);
+        *pixel = fminf(255.0f, *pixel + intensity);
+      }
+    }
+  }
+}
+
+void capture_mouse_events() {
+  if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+    Vector2 pos = GetMousePosition();
+    Vector2 canvas_p = Vector2Subtract(pos, canvas_pos);
+    int cell_x = (int)canvas_p.x / CELL_SIZE;
+    int cell_y = (int)canvas_p.y / CELL_SIZE;
+
+    if (cell_x < IMAGE_SIZE && cell_y < IMAGE_SIZE) {
+      paint_cell_with_blur(cell_x, cell_y);
+    }
+  }
+}
+
+#define EPOCHS 30
+
 int main() {
+  memset(canvas, 0, sizeof(canvas));
   Dataset data = load_mnist_dataset("./data/lg/train-images.idx3-ubyte",
                                     "./data/lg/train-labels.idx1-ubyte");
+  Sample *test_samples = samples(data);
+
+  Dataset validate = load_mnist_dataset("./data/lg/t10k-images.idx3-ubyte",
+                                        "./data/lg/t10k-labels.idx1-ubyte");
+  Sample *validate_samples = samples(validate);
+
   Layer layers[] = {
       {.neurons = 784, .act = sig_vec, .dact = d_sig_vec},
       {.neurons = 100, .act = sig_vec, .dact = d_sig_vec},
       {.neurons = 10, .act = sig_vec, .dact = d_sig_vec},
   };
   Network net = new_network(ARRAY_LEN(layers), layers);
-  Sample *test_samples = samples(data);
-  Dataset validate = load_mnist_dataset("./data/lg/t10k-images.idx3-ubyte",
-                                        "./data/lg/t10k-labels.idx1-ubyte");
-  printf("Loaded validation set\n");
-
-  Sample *validate_samples = samples(validate);
-  gradient_descent(&net, test_samples, data.image_count, 50, 10, 3.0,
+  printf("Epoca -1 - ");
+  evaluate(&net, validate.image_count, validate_samples);
+  gradient_descent(&net, test_samples, data.image_count, EPOCHS, 10, 3.0,
                    validate_samples, validate.image_count);
-  printf("Network trained\n");
 
-  size_t right = 0;
-  size_t wrong = 0;
-  for (size_t i = 0; i < validate.image_count; i++) {
-    Vec result = feed_forward(&net, validate_samples[i].data);
-    size_t ans = eval_result(result);
-    if (ans == validate.labels[i]) {
-      right += 1;
-    } else {
-      wrong += 1;
+  Vec canvas_vec = (Vec){
+      .size = IMAGE_SIZE * IMAGE_SIZE,
+      .values = canvas,
+  };
+
+  InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "MNIST");
+
+  int last_result = -1;
+  while (!WindowShouldClose()) {
+    capture_mouse_events();
+    BeginDrawing();
+    ClearBackground(BLACK);
+    if (IsKeyPressed(KEY_T)) {
+      Vec output = feed_forward(&net, canvas_vec);
+      last_result = eval_result(output);
     }
+    if (last_result >= 0) {
+      int text_x = CANVAS_X + CANVAS_SIZE + 20;
+      int text_y = CANVAS_Y;
+      DrawText("Resultado:", text_x, text_y, 20, WHITE);
+      char result_text[32];
+      snprintf(result_text, sizeof(result_text), "%d", last_result);
+      DrawText(result_text, text_x, text_y + 30, 40, YELLOW);
+    }
+
+    if (IsKeyPressed(KEY_SPACE)) {
+      memset(canvas, 0, sizeof(canvas));
+      last_result = -1;
+    }
+    init_canvas();
+    EndDrawing();
   }
 
-  printf("Test data results: %ld/%ld right, %ld/%ld wrong\n", right,
-         validate.image_count, wrong, validate.image_count);
   return 0;
 }
