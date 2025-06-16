@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <math.h>
+#include <time.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -682,6 +683,7 @@ void capture_mouse_events() {
 
 int main() {
   memset(canvas, 0, sizeof(canvas));
+  srand(time(NULL));
   Dataset data = load_mnist_dataset("./data/lg/train-images.idx3-ubyte",
                                     "./data/lg/train-labels.idx1-ubyte");
   Sample *test_samples = samples(data);
