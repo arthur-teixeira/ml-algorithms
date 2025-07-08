@@ -1,12 +1,12 @@
 #include <assert.h>
 #include <math.h>
-#include <time.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <raylib.h>
 #include <raymath.h>
@@ -121,7 +121,7 @@ typedef struct {
   Mat *dnw;
 } Backprop;
 
-Backprop backprop(Network *net, Vec x, Vec y);
+void backprop(Network *net, Vec x, Vec y);
 void free_backprop(Network *net, Backprop b);
 void apply_gradient_mat(Mat *gradients, Mat *deltas, size_t num_mats);
 void apply_gradient_vec(Vec *gradients, Vec *deltas, size_t num_vecs);
@@ -410,8 +410,8 @@ void evaluate(Network *net, size_t num_samples, Sample *validate_data) {
       wrong += 1;
     }
   }
-  printf("Resultados: %ld/%ld corretos, %ld/%ld errados\n", right,
-         num_samples, wrong, num_samples);
+  printf("Resultados: %ld/%ld corretos, %ld/%ld errados\n", right, num_samples,
+         wrong, num_samples);
 }
 
 void gradient_descent(Network *net, Sample *training_data,
@@ -472,6 +472,8 @@ void free_mat_array(Network *net, Mat *v) {
   free(v);
 }
 
+static Backprop b = {0};
+
 void update_batch(Network *net, Sample *batch, size_t batch_size, float eta) {
   Vec *gradient_b = vec_array(net, true);
   Mat *gradient_w = mat_array(net, true);
@@ -479,10 +481,9 @@ void update_batch(Network *net, Sample *batch, size_t batch_size, float eta) {
   for (size_t i = 0; i < batch_size; i++) {
     Vec x = batch[i].data;
     Vec y = batch[i].expected;
-    Backprop b = backprop(net, x, y);
+    backprop(net, x, y);
     apply_gradient_mat(gradient_w, b.dnw, net->num_layers - 1);
     apply_gradient_vec(gradient_b, b.dnb, net->num_layers - 1);
-    free_backprop(net, b);
   }
 
   for (size_t i = 0; i < net->num_layers - 1; i++) {
@@ -550,10 +551,7 @@ Vec softmax(Vec z) {
   return result;
 }
 
-Backprop backprop(Network *net, Vec x, Vec y) {
-  Vec *gradient_b = vec_array(net, false);
-  Mat *gradient_w = mat_array(net, false);
-
+void backprop(Network *net, Vec x, Vec y) {
   size_t n = net->num_layers - 1;
 
   Vec activation = x;
@@ -580,8 +578,8 @@ Backprop backprop(Network *net, Vec x, Vec y) {
   free_vec(dcost);
   free_vec(dact);
 
-  gradient_b[n - 1] = delta;
-  gradient_w[n - 1] = outer_product(delta, activations[n - 1]);
+  b.dnb[n - 1] = delta;
+  b.dnw[n - 1] = outer_product(delta, activations[n - 1]);
 
   for (ssize_t i = n - 2; i >= 0; i--) {
     Vec z = zs[i];
@@ -591,8 +589,8 @@ Backprop backprop(Network *net, Vec x, Vec y) {
     free_vec(dcost);
     free_vec(dact);
 
-    gradient_b[i] = delta;
-    gradient_w[i] = outer_product(delta, activations[i]);
+    b.dnb[i] = delta;
+    b.dnw[i] = outer_product(delta, activations[i]);
   }
 
   for (size_t i = 0; i < n; i++) {
@@ -601,10 +599,6 @@ Backprop backprop(Network *net, Vec x, Vec y) {
     }
     free_vec(zs[i]);
   }
-  return (Backprop){
-      .dnb = gradient_b,
-      .dnw = gradient_w,
-  };
 }
 
 void free_backprop(Network *net, Backprop b) {
@@ -698,6 +692,9 @@ int main() {
       {.neurons = 10, .act = sig_vec, .dact = d_sig_vec},
   };
   Network net = new_network(ARRAY_LEN(layers), layers);
+  b.dnb = vec_array(&net, true);
+  b.dnw = mat_array(&net, true);
+
   printf("Epoca -1 - ");
   evaluate(&net, validate.image_count, validate_samples);
   gradient_descent(&net, test_samples, data.image_count, EPOCHS, 10, 3.0,
