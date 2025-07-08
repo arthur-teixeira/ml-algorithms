@@ -1,13 +1,9 @@
-#include <assert.h>
-#include <math.h>
 #include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#include "../shared/data_structures.h"
 #include <raylib.h>
 #include <raymath.h>
 
@@ -28,22 +24,6 @@ typedef struct {
   size_t image_size;
   size_t image_count;
 } Dataset;
-
-#define MAT_AT(m, i, j) (m).values[(i) * (m).cols + (j)]
-#define VEC_AT(v, i) (v).values[(i)]
-#define MAT_SIZE(m) (m).cols *(m).rows
-#define FOREACH_VEC(v) for (size_t i = 0; i < (v).size; i++)
-
-typedef struct {
-  float *values;
-  size_t rows;
-  size_t cols;
-} Mat;
-
-typedef struct {
-  float *values;
-  size_t size;
-} Vec;
 
 typedef struct {
   Vec data;
@@ -121,29 +101,56 @@ typedef struct {
   Mat *dnw;
 } Backprop;
 
-void backprop(Network *net, Vec x, Vec y);
+Backprop backprop(Network *net, Vec x, Vec y);
 void free_backprop(Network *net, Backprop b);
 void apply_gradient_mat(Mat *gradients, Mat *deltas, size_t num_mats);
 void apply_gradient_vec(Vec *gradients, Vec *deltas, size_t num_vecs);
-void free_mat_array(Network *net, Mat *v);
-Mat *mat_array(Network *net, bool);
-void free_vec_array(Network *net, Vec *v);
-Vec *vec_array(Network *net, bool);
 Sample **split_mini_batches(Sample *training_data, size_t n, size_t batch_size,
                             size_t *num_batches);
 void shuffle(Sample *training_data, size_t n);
 Vec feed_forward(Network *net, Vec a);
-Vec matrix_vec_multiply(Mat w, Vec a);
 Network new_network(size_t num_layers, Layer *layers);
-Vec vec_sub(Vec a, Vec b);
-Vec vec_add(Vec a, Vec b);
-float dot(Vec a, Vec b);
-void free_mat(Mat m);
-Mat new_mat(size_t rows, size_t cols);
-void free_vec(Vec v);
-Vec new_vec(size_t size);
 void update_batch(Network *net, Sample *batch, size_t batch_size, float eta);
-Mat outer_product(Vec a, Vec b);
+
+Vec *vec_array(Network *net, bool fill) {
+  size_t num_vecs = net->num_layers - 1;
+  Vec *a = calloc(sizeof(Vec), num_vecs);
+  if (fill) {
+    for (size_t i = 0; i < num_vecs; i++) {
+      size_t vec_size = net->layers[i + 1].neurons;
+      a[i] = new_vec(vec_size);
+    }
+  }
+  return a;
+}
+
+void free_vec_array(Network *net, Vec *v) {
+  for (size_t i = 0; i < net->num_layers - 1; i++) {
+    free_vec(v[i]);
+  }
+  free(v);
+}
+
+Mat *mat_array(Network *net, bool fill) {
+  size_t num_matrices = net->num_layers - 1;
+  Mat *a = calloc(sizeof(Mat), num_matrices);
+  if (fill) {
+    for (size_t i = 0; i < num_matrices; i++) {
+      size_t mat_rows = net->layers[i + 1].neurons;
+      size_t mat_cols = net->layers[i].neurons;
+      a[i] = new_mat(mat_rows, mat_cols);
+    }
+  }
+
+  return a;
+}
+
+void free_mat_array(Network *net, Mat *v) {
+  for (size_t i = 0; i < net->num_layers - 1; i++) {
+    free_mat(v[i]);
+  }
+  free(v);
+}
 
 Dataset load_mnist_dataset(const char *images_filename,
                            const char *labels_filename) {
@@ -165,39 +172,9 @@ Dataset load_mnist_dataset(const char *images_filename,
   };
 }
 
-float sig(float i) { return 1 / (1 + exp(-i)); }
-float d_sig(float i) { return sig(i) * (1 - sig(i)); }
-Vec sig_vec(Vec a) {
-  Vec s = new_vec(a.size);
-  FOREACH_VEC(a) { VEC_AT(s, i) = sig(VEC_AT(a, i)); }
-  return s;
-}
-Vec d_sig_vec(Vec a) {
-  Vec d = new_vec(a.size);
-  FOREACH_VEC(a) { VEC_AT(d, i) = sig(VEC_AT(a, i)); }
-  return d;
-}
-
-float rand_normal() { return ((float)rand() / (float)RAND_MAX); }
-float rand_float_scaled(size_t fan_in, size_t fan_out) {
-  // Xavier/Glorot Uniform
-  float limit = sqrtf(6.0f / (fan_in + fan_out));
-  float scale = 2.0f * limit;
-  return (rand_normal())*scale - limit;
-}
-
 Vec expected(size_t label) {
   Vec v = new_vec(10);
   VEC_AT(v, label) = 1.0f;
-  return v;
-}
-
-Vec vectorize_image(uint8_t *image, size_t image_size) {
-  Vec v = new_vec(image_size);
-  for (size_t i = 0; i < image_size; i++) {
-    VEC_AT(v, i) = (float)image[i];
-  }
-
   return v;
 }
 
@@ -230,75 +207,6 @@ void free_samples(Sample *s, size_t num_samples) {
 }
 
 #define IMAGE 1000
-
-Vec new_vec(size_t size) {
-  Vec v = (Vec){
-      .size = size,
-      .values = calloc(sizeof(float), size),
-  };
-  assert(v.values != NULL);
-  return v;
-}
-
-void free_vec(Vec v) { free(v.values); }
-
-Vec rand_vec(size_t size, size_t fan_in, size_t fan_out) {
-  Vec v = new_vec(size);
-  FOREACH_VEC(v) { v.values[i] = rand_float_scaled(fan_in, fan_out); }
-  return v;
-}
-
-Mat new_mat(size_t rows, size_t cols) {
-  Mat mat = (Mat){
-      .rows = rows,
-      .cols = cols,
-      .values = calloc(sizeof(float), rows * cols),
-  };
-  assert(mat.values != NULL);
-  return mat;
-}
-
-void free_mat(Mat m) { free(m.values); }
-
-Mat rand_matrix(size_t m, size_t n, size_t fan_in, size_t fan_out) {
-  Mat mat = new_mat(m, n);
-  for (size_t i = 0; i < m * n; i++) {
-    mat.values[i] = rand_float_scaled(fan_in, fan_out);
-  }
-  return mat;
-}
-
-float dot(Vec a, Vec b) {
-  assert(a.size == b.size);
-  float acc = 0.0f;
-  FOREACH_VEC(a) { acc += a.values[i] * b.values[i]; }
-  return acc;
-}
-
-Vec vec_add(Vec a, Vec b) {
-  Vec c = new_vec(a.size);
-  FOREACH_VEC(a) { VEC_AT(c, i) = VEC_AT(a, i) + VEC_AT(b, i); }
-  return c;
-}
-
-Vec vec_sub(Vec a, Vec b) {
-  Vec c = new_vec(a.size);
-  FOREACH_VEC(a) { VEC_AT(c, i) = VEC_AT(a, i) - VEC_AT(b, i); }
-  return c;
-}
-
-Mat outer_product(Vec a, Vec b) {
-  size_t rows = a.size;
-  size_t cols = b.size;
-  Mat result = new_mat(rows, cols);
-  for (size_t i = 0; i < rows; i++) {
-    for (size_t j = 0; j < cols; j++) {
-      MAT_AT(result, i, j) = VEC_AT(a, i) * VEC_AT(b, j);
-    }
-  }
-
-  return result;
-}
 
 Network new_network(size_t num_layers, Layer *layers) {
   Network net = (Network){
@@ -432,48 +340,6 @@ void gradient_descent(Network *net, Sample *training_data,
   }
 }
 
-Vec *vec_array(Network *net, bool fill) {
-  size_t num_vecs = net->num_layers - 1;
-  Vec *a = calloc(sizeof(Vec), num_vecs);
-  if (fill) {
-    for (size_t i = 0; i < num_vecs; i++) {
-      size_t vec_size = net->layers[i + 1].neurons;
-      a[i] = new_vec(vec_size);
-    }
-  }
-  return a;
-}
-
-void free_vec_array(Network *net, Vec *v) {
-  for (size_t i = 0; i < net->num_layers - 1; i++) {
-    free_vec(v[i]);
-  }
-  free(v);
-}
-
-Mat *mat_array(Network *net, bool fill) {
-  size_t num_matrices = net->num_layers - 1;
-  Mat *a = calloc(sizeof(Mat), num_matrices);
-  if (fill) {
-    for (size_t i = 0; i < num_matrices; i++) {
-      size_t mat_rows = net->layers[i + 1].neurons;
-      size_t mat_cols = net->layers[i].neurons;
-      a[i] = new_mat(mat_rows, mat_cols);
-    }
-  }
-
-  return a;
-}
-
-void free_mat_array(Network *net, Mat *v) {
-  for (size_t i = 0; i < net->num_layers - 1; i++) {
-    free_mat(v[i]);
-  }
-  free(v);
-}
-
-static Backprop b = {0};
-
 void update_batch(Network *net, Sample *batch, size_t batch_size, float eta) {
   Vec *gradient_b = vec_array(net, true);
   Mat *gradient_w = mat_array(net, true);
@@ -481,9 +347,10 @@ void update_batch(Network *net, Sample *batch, size_t batch_size, float eta) {
   for (size_t i = 0; i < batch_size; i++) {
     Vec x = batch[i].data;
     Vec y = batch[i].expected;
-    backprop(net, x, y);
+    Backprop b = backprop(net, x, y);
     apply_gradient_mat(gradient_w, b.dnw, net->num_layers - 1);
     apply_gradient_vec(gradient_b, b.dnb, net->num_layers - 1);
+    free_backprop(net, b);
   }
 
   for (size_t i = 0; i < net->num_layers - 1; i++) {
@@ -551,7 +418,12 @@ Vec softmax(Vec z) {
   return result;
 }
 
-void backprop(Network *net, Vec x, Vec y) {
+Backprop backprop(Network *net, Vec x, Vec y) {
+  Backprop b = {
+      .dnb = vec_array(net, false),
+      .dnw = mat_array(net, false),
+  };
+
   size_t n = net->num_layers - 1;
 
   Vec activation = x;
@@ -599,6 +471,7 @@ void backprop(Network *net, Vec x, Vec y) {
     }
     free_vec(zs[i]);
   }
+  return b;
 }
 
 void free_backprop(Network *net, Backprop b) {
@@ -678,12 +551,14 @@ void capture_mouse_events() {
 int main() {
   memset(canvas, 0, sizeof(canvas));
   srand(time(NULL));
-  Dataset data = load_mnist_dataset("./mnist-perceptron/data/lg/train-images.idx3-ubyte",
-                                    "./mnist-perceptron/data/lg/train-labels.idx1-ubyte");
+  Dataset data =
+      load_mnist_dataset("./mnist-perceptron/data/lg/train-images.idx3-ubyte",
+                         "./mnist-perceptron/data/lg/train-labels.idx1-ubyte");
   Sample *test_samples = samples(data);
 
-  Dataset validate = load_mnist_dataset("./mnist-perceptron/data/lg/t10k-images.idx3-ubyte",
-                                        "./mnist-perceptron/data/lg/t10k-labels.idx1-ubyte");
+  Dataset validate =
+      load_mnist_dataset("./mnist-perceptron/data/lg/t10k-images.idx3-ubyte",
+                         "./mnist-perceptron/data/lg/t10k-labels.idx1-ubyte");
   Sample *validate_samples = samples(validate);
 
   Layer layers[] = {
@@ -692,8 +567,6 @@ int main() {
       {.neurons = 10, .act = sig_vec, .dact = d_sig_vec},
   };
   Network net = new_network(ARRAY_LEN(layers), layers);
-  b.dnb = vec_array(&net, true);
-  b.dnw = mat_array(&net, true);
 
   printf("Epoca -1 - ");
   evaluate(&net, validate.image_count, validate_samples);
