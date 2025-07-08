@@ -678,12 +678,12 @@ void capture_mouse_events() {
 int main() {
   memset(canvas, 0, sizeof(canvas));
   srand(time(NULL));
-  Dataset data = load_mnist_dataset("./data/lg/train-images.idx3-ubyte",
-                                    "./data/lg/train-labels.idx1-ubyte");
+  Dataset data = load_mnist_dataset("./mnist-perceptron/data/lg/train-images.idx3-ubyte",
+                                    "./mnist-perceptron/data/lg/train-labels.idx1-ubyte");
   Sample *test_samples = samples(data);
 
-  Dataset validate = load_mnist_dataset("./data/lg/t10k-images.idx3-ubyte",
-                                        "./data/lg/t10k-labels.idx1-ubyte");
+  Dataset validate = load_mnist_dataset("./mnist-perceptron/data/lg/t10k-images.idx3-ubyte",
+                                        "./mnist-perceptron/data/lg/t10k-labels.idx1-ubyte");
   Sample *validate_samples = samples(validate);
 
   Layer layers[] = {
