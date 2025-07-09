@@ -79,50 +79,67 @@ Dataset parse_wine_quality_dataset(char *filename) {
   };
 }
 
-void gradient_descent(Dataset d, double eta, double *w, double *b) {
-  double d_w = 0.0, d_b = 0.0;
+double predict(Vec w, double b, Vec sample) {
+  assert(w.size < sample.size);
+  double acc = b;
+  for (size_t i = 0; i < w.size; i++) {
+    acc += w.values[i] * sample.values[i];
+  }
+
+  return acc;
+}
+
+void gradient_descent(Dataset d, double eta, Vec w, double *b) {
+  Vec d_w = new_vec(w.size);
+  double d_b = 0.0;
 
   size_t n = d.training_cuttoff;
   for (size_t i = 0; i < n; i++) {
-    // MSE = 1/N Σ((y - (wx+ b))^2)
-    // ∂d/∂w = 1/N Σ (2x(y - (wx + b))
-    // ∂d/∂b = 1/N Σ 2(y - (wx + b)
     Vec sample = da_at(d.samples, i);
     double expected = EXPECTED(sample);
+    double predicted = predict(w, *b, sample);
 
-    double predicted = *w * sample.values[0] + *b;
     double t = (expected - predicted);
-    d_w -= sample.values[0] * t;
+
+    for (size_t j = 0; j < w.size; j++) {
+      d_w.values[j] -= sample.values[j] * t;
+    }
     d_b -= t;
   }
 
-  *w = *w - 2 * (eta / n) * d_w;
+  for (size_t j = 0; j < w.size; j++) {
+    w.values[j] = w.values[j] - 2 * (eta / n) * d_w.values[j];
+  }
+
   *b = *b - 2 * (eta / n) * d_b;
+
+  free_vec(d_w);
 }
 
-double validate(Dataset d, double w, double b) {
+double validate(Dataset d, Vec w, double b) {
   double mse_acc = 0.0f;
   for (size_t i = d.training_cuttoff; i < d.samples.len; i++) {
     Vec sample = da_at(d.samples, i);
     double expected = EXPECTED(sample);
-    double predicted = w * sample.values[0] + b;
+    double predicted = predict(w, b, sample);
     mse_acc += fabs(expected - predicted) * fabs(expected - predicted);
   }
   return mse_acc / (d.samples.len - d.training_cuttoff);
 }
 
-#define EPOCHS 1000000
+#define EPOCHS 10000000
 
 int main(void) {
   Dataset d = parse_wine_quality_dataset(
       "./linear-regression/data/winequality-red.csv");
 
-  double w = 0.0, b = 0.0;
+  Vec w = new_vec(d.dimensions);
+  double b = 0.0;
   double prev_loss = INFINITY;
   for (size_t i = 0; i < EPOCHS; i++) {
-    gradient_descent(d, 0.001, &w, &b);
+    gradient_descent(d, 0.0001, w, &b);
 
-    if (i % 100 == 0) {
+    if (i % 1000 == 0) {
       double loss = validate(d, w, b);
       printf("Epoch %ld - Loss: %.9f\n", i, loss);
       if (fabs(loss - prev_loss) < 0.00001) {
