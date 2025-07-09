@@ -13,3 +13,5 @@
     }                                                                          \
     da->values[da->len++] = value;                                             \
   } while (0)
+
+#define da_at(da, i) (da).values[i]
