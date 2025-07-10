@@ -21,26 +21,30 @@ typedef struct {
   size_t training_cuttoff; // samples index from which validation data starts.
 } Dataset;
 
-Vec parse_line(char *line, size_t num_fields) {
+Vec parse_line(char *line, size_t num_fields, char *delim) {
   Vec v = new_vec(num_fields);
-  char *tok = strtok(line, ",");
+  char *tok = strtok(line, delim);
   size_t i = 0;
   while (tok != NULL) {
-    double d;
-    sscanf(tok, "%lf", &d);
-    v.values[i++] = d;
-    tok = strtok(NULL, ",");
+    if (strlen(tok) > 0) {
+      double d;
+      sscanf(tok, "%lf", &d);
+      v.values[i++] = d;
+    }
+    tok = strtok(NULL, delim);
   }
 
   return v;
 }
 
-size_t count_fields(char *line) {
+size_t count_fields(char *line, char *delim) {
   size_t count = 0;
-  char *tok = strtok(line, ",");
+  char *tok = strtok(line, delim);
   while (tok != NULL) {
-    count++;
-    tok = strtok(NULL, ",");
+    if (strlen(tok) > 0) {
+      count++;
+    }
+    tok = strtok(NULL, delim);
   }
 
   return count;
@@ -59,7 +63,7 @@ Dataset parse_wine_quality_dataset(char *filename) {
 
   char line[1024] = {0};
   fgets(line, sizeof(line), f);
-  size_t num_fields = count_fields(line);
+  size_t num_fields = count_fields(line, ",");
 
   Samples samples = {0};
   da_init((&samples), sizeof(Vec));
@@ -67,9 +71,11 @@ Dataset parse_wine_quality_dataset(char *filename) {
   do {
     memset(line, 0, sizeof(line));
     fgets(line, sizeof(line), f);
-    Vec sample = parse_line(line, num_fields);
+    Vec sample = parse_line(line, num_fields, ",");
     da_append((&samples), sample);
   } while (strlen(line) > 0);
+
+  fclose(f);
 
   return (Dataset){
       .samples = samples,
@@ -77,6 +83,77 @@ Dataset parse_wine_quality_dataset(char *filename) {
       .dimensions = samples.values[0].size - 1,
       .training_cuttoff = samples.len / 2,
   };
+}
+
+Dataset parse_boston_housing_dataset(char *filename) {
+  FILE *f = fopen(filename, "rb");
+  if (!f) {
+    perror("fopen");
+    exit(1);
+  }
+
+  char line[1024] = {0};
+  fgets(line, sizeof(line), f);
+  fseek(f, 0, SEEK_SET);
+  size_t num_fields = count_fields(line, " ");
+
+  Samples samples = {0};
+  da_init((&samples), sizeof(Vec));
+
+  do {
+    memset(line, 0, sizeof(line));
+    fgets(line, sizeof(line), f);
+    Vec sample = parse_line(line, num_fields, " ");
+    da_append((&samples), sample);
+  } while (strlen(line) > 0);
+
+  fclose(f);
+  return (Dataset){
+      .samples = samples,
+      // Last value is the dependent variable
+      .dimensions = samples.values[0].size - 1,
+      .training_cuttoff = samples.len / 2,
+  };
+}
+
+void normalize_dataset(Dataset d) {
+  Vec feature_means = new_vec(d.dimensions);
+  Vec feature_stddevs = new_vec(d.dimensions);
+
+  size_t n = d.samples.len;
+  for (size_t i = 0; i < n; i++) {
+    Vec sample = da_at(d.samples, i);
+    for (size_t j = 0; j < d.dimensions; j++) {
+      VEC_AT(feature_means, j) += (VEC_AT(sample, j) / n);
+    }
+  }
+
+  for (size_t i = 0; i < n; i++) {
+    Vec sample = da_at(d.samples, i);
+    for (size_t j = 0; j < d.dimensions; j++) {
+      double feature_mean = VEC_AT(feature_means, j);
+      VEC_AT(feature_stddevs, j) +=
+          pow(VEC_AT(sample, j) - feature_mean, 2) / n;
+    }
+  }
+
+  for (size_t i = 0; i < d.dimensions; i++) {
+    VEC_AT(feature_stddevs, i) = sqrt(VEC_AT(feature_stddevs, i));
+  }
+
+  for (size_t i = 0; i < n; i++) {
+    Vec sample = da_at(d.samples, i);
+    for (size_t j = 0; j < d.dimensions; j++) {
+      double feature_mean = VEC_AT(feature_means, j);
+      double feature_stddev = VEC_AT(feature_stddevs, j);
+      if (feature_stddev != 0.0) {
+        VEC_AT(sample, j) = (VEC_AT(sample, j) - feature_mean) / feature_stddev;
+      }
+    }
+  }
+
+  free_vec(feature_means);
+  free_vec(feature_stddevs);
 }
 
 double predict(Vec w, double b, Vec sample) {
@@ -132,6 +209,10 @@ double validate(Dataset d, Vec w, double b) {
 int main(void) {
   Dataset d = parse_wine_quality_dataset(
       "./linear-regression/data/winequality-red.csv");
+  // Dataset d =
+  //     parse_boston_housing_dataset("./linear-regression/data/housing.csv");
+
+  normalize_dataset(d);
 
   Vec w = new_vec(d.dimensions);
   double b = 0.0;
@@ -139,7 +220,7 @@ int main(void) {
   for (size_t i = 0; i < EPOCHS; i++) {
     gradient_descent(d, 0.0001, w, &b);
 
-    if (i % 1000 == 0) {
+    if (i % 10 == 0) {
       double loss = validate(d, w, b);
       printf("Epoch %ld - Loss: %.9f\n", i, loss);
       if (fabs(loss - prev_loss) < 0.00001) {
